@@ -2,6 +2,7 @@ const express = require('express')
 const dotenv = require('dotenv')
 const cors = require('cors');
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
+const { createRemoteJWKSet, jwtVerify } = require('jose-cjs');
 dotenv.config()
 
 const uri = process.env.MONGODB_URI;
@@ -20,6 +21,26 @@ const client = new MongoClient(uri, {
     }
 });
 
+const JWKS = createRemoteJWKSet(
+  new URL(`${process.env.CLIENT_SIDE_URL}/api/auth/jwks`),
+);
+
+async function validateToken(req, res, next) {
+  const authHeaders = req?.headers.authorization;
+  if (!authHeaders) return res.status(401).json({ message: "unauthorized" });
+  const token = authHeaders?.split(" ")[1];
+  console.log('bonda', token);
+  try {
+    const { payload } = await jwtVerify(token, JWKS)
+    // console.log("payload bonda", payload);
+    await jwtVerify(token, JWKS);
+    next();
+  } catch (error) {
+    return res.status(403).json({ message: "Forbidden" });
+  }
+}
+
+
 async function run() {
     try {
         await client.connect();
@@ -28,7 +49,6 @@ async function run() {
         const petCollection = db.collection('pets')
         const adoptionCollection = db.collection('adoptionRequests')
 
-        // 🌟 নতুন পেটের ডেটা ডাটাবেজে অ্যাড করার API (POST /pet)
         app.post('/pet', async (req, res) => {
             try {
                 const newPet = req.body;
@@ -43,15 +63,25 @@ async function run() {
             }
         });
 
-        // 🌟 পেটের ডিটেইলস আপডেট করার API (PUT /pet/:id)
-        app.put('/pet/:id', async (req, res) => {
+
+        app.put('/pet/:id', async (req, res, next) => {
+            const authHeader = req.headers.authorization;
+            console.log(authHeader);
+            next()
+            if (!authHeader) {
+                return res.status(401).json({ message: "Unauthorized: No token provided" });
+            }
+
             try {
                 const id = req.params.id;
                 const updatedData = req.body;
+
                 if (!ObjectId.isValid(id)) {
                     return res.status(400).json({ message: "Invalid Pet ID" });
                 }
+
                 const query = { _id: new ObjectId(id) };
+
                 const updateDoc = {
                     $set: {
                         petName: updatedData.petName,
@@ -66,10 +96,13 @@ async function run() {
                         description: updatedData.description
                     },
                 };
+
                 const result = await petCollection.updateOne(query, updateDoc);
+
                 if (result.matchedCount === 0) {
                     return res.status(404).json({ message: "Pet not found" });
                 }
+
                 res.json({ message: "Pet updated successfully", result });
             } catch (error) {
                 console.error('Error updating pet:', error);
@@ -77,7 +110,6 @@ async function run() {
             }
         });
 
-        // ১. সব পেটস পাওয়ার API
         app.get('/pet', async (req, res) => {
             try {
                 const { search, species, sort } = req.query;
@@ -103,11 +135,9 @@ async function run() {
             }
         });
 
-        // নতুন API: নির্দিষ্ট পেট আইডি দিয়ে রিকোয়েস্টগুলো পাওয়ার জন্য
         app.get('/adoption-requests-by-pet/:petId', async (req, res) => {
             try {
                 const { petId } = req.params;
-                // adoptionCollection-এ পেট আইডি দিয়ে খুঁজছি
                 const result = await adoptionCollection.find({ petId: petId }).toArray();
                 res.json(result);
             } catch (error) {
@@ -115,7 +145,6 @@ async function run() {
             }
         });
 
-        // ২. নির্দিষ্ট ইউজারের সব পেট পাওয়ার API
         app.get('/my-listings', async (req, res) => {
             try {
                 const { email } = req.query;
@@ -131,8 +160,8 @@ async function run() {
             }
         });
 
-        // ৩. সিঙ্গেল পেটের ডিটেইলস পাওয়ার API
-        app.get('/pet/:id', async (req, res) => {
+
+        app.get('/pet/:id', validateToken, async (req, res) => {
             try {
                 const { id } = req.params;
                 let query = { _id: id };
@@ -150,7 +179,6 @@ async function run() {
             }
         });
 
-        // ৪. অ্যাডপশন রিকোয়েস্ট সাবমিট ও অন্যান্য রিকোয়েস্ট API
         app.post('/adoption-request', async (req, res) => {
             try {
                 const requestData = req.body;
@@ -174,7 +202,7 @@ async function run() {
         app.patch('/adoption-requests/:id', async (req, res) => {
             try {
                 const id = req.params.id;
-                const { status } = req.body; // ফ্রন্টএন্ড থেকে আসা status
+                const { status } = req.body; 
 
                 const filter = { _id: new ObjectId(id) };
                 const updateDoc = {
